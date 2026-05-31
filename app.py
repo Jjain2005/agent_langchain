@@ -1,24 +1,14 @@
 import streamlit as st
-from langchain_groq import ChatGroq
-from langchain.agents import initialize_agent, AgentType
-from langchain.callbacks import StreamlitCallbackHandler
-from langchain.tools import Tool
+from groq import Groq
+from duckduckgo_search import DDGS
 import wikipediaapi
 import arxiv as arxiv_client
-from duckduckgo_search import DDGS
-from dotenv import load_dotenv
 
-load_dotenv()
-
-st.set_page_config(page_title="LangChain Search Agent", page_icon="🔍")
-st.title("LangChain - Chat with Search")
+st.set_page_config(page_title="AI Search Agent", page_icon="🔍")
+st.title("AI Search Agent")
 
 st.sidebar.title("Settings")
 api_key = st.sidebar.text_input("Enter your Groq API key:", type="password")
-
-# ──────────────────────────────────────────
-# ONLY THIS SECTION CHANGED — tool definitions
-# ──────────────────────────────────────────
 
 def duckduckgo_search(query):
     with DDGS() as ddgs:
@@ -39,60 +29,38 @@ def wikipedia_search(query):
     page = wiki.page(query)
     return page.summary[:500] if page.exists() else f"No page found for '{query}'."
 
-search = Tool(name="Search",    func=duckduckgo_search, description="Search the web for current information.")
-arxiv  = Tool(name="Arxiv",     func=arxiv_search,      description="Search arxiv for scientific papers.")
-wiki   = Tool(name="Wikipedia", func=wikipedia_search,  description="Search Wikipedia for general knowledge.")
-
-# ──────────────────────────────────────────
-# EVERYTHING BELOW IS EXACTLY YOUR OLD CODE
-# ──────────────────────────────────────────
-
 if "messages" not in st.session_state:
     st.session_state["messages"] = [
-        {"role": "assistant", "content": "Hi! I'm a chatbot that can search the web, Arxiv, and Wikipedia."}
+        {"role": "assistant", "content": "Hi! I can search the web, Arxiv, and Wikipedia. What do you want to know?"}
     ]
 
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
-if prompt := st.chat_input(placeholder="What is machine learning?"):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    st.chat_message("user").write(prompt)
+if user_input := st.chat_input(placeholder="What is machine learning?"):
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    st.chat_message("user").write(user_input)
 
     if not api_key:
-        st.warning("⚠️ Please enter your Groq API key in the sidebar.")
+        st.warning(" Please enter your Groq API key in the sidebar.")
         st.stop()
 
-    llm = ChatGroq(
-        groq_api_key=api_key,
-        model_name="llama-3.3-70b-versatile",
-        streaming=True
-    ) 
-
-    tools = [search, arxiv, wiki]
-
-    search_agent = initialize_agent(
-        tools,
-        llm,
-        agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-        handle_parsing_errors=True,
-        max_iterations=5,
-        verbose=True,
-        early_stopping_method="generate",
-        agent_kwargs={
-            "prefix": """You are a helpful assistant. You have access to the following tools.
-Always use a tool to find information before answering.
-After getting the tool result, provide a clean final answer to the user.
-Do NOT repeat the Thought/Action/Observation steps in your final answer."""
-        }
-    )
-
     with st.chat_message("assistant"):
-        st_cb = StreamlitCallbackHandler(st.container(), expand_new_thoughts=False)
-        try:
-            response = search_agent.run(prompt, callbacks=[st_cb])
-        except Exception as e:
-            response = f"Sorry, ran into an error: {str(e)}"
+        with st.spinner("Searching..."):
+            web_results = duckduckgo_search(user_input)
+            wiki_results = wikipedia_search(user_input)
 
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        st.write(response)
+            context = f"Web Search Results:\n{web_results}\n\nWikipedia:\n{wiki_results}"
+
+            client = Groq(api_key=api_key)
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant. Use the provided search results to answer the question accurately and concisely."},
+                    {"role": "user", "content": f"Question: {user_input}\n\nSearch Results:\n{context}"}
+                ]
+            )
+            output = response.choices[0].message.content
+
+        st.write(output)
+        st.session_state.messages.append({"role": "assistant", "content": output})
